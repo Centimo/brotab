@@ -371,6 +371,59 @@ def show_clients(args):
         print(client)
 
 
+def stream_events(args):
+    """Connect to mediator event sockets and stream tab events to stdout."""
+    import glob
+    import json
+    import select
+    import socket
+
+    socket_pattern = '/tmp/brotab-events-*.sock'
+    socket_paths = glob.glob(socket_pattern)
+    if not socket_paths:
+        print(f'No event sockets found matching {socket_pattern}', file=sys.stderr)
+        return 1
+
+    sockets = []
+    for path in socket_paths:
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(path)
+            sockets.append(sock)
+            print(f'Connected to {path}', file=sys.stderr)
+        except (ConnectionRefusedError, FileNotFoundError) as e:
+            print(f'Cannot connect to {path}: {e}', file=sys.stderr)
+
+    if not sockets:
+        print('No event sockets available', file=sys.stderr)
+        return 1
+
+    buffers = {sock.fileno(): b'' for sock in sockets}
+    try:
+        while True:
+            readable, _, _ = select.select(sockets, [], [])
+            for sock in readable:
+                data = sock.recv(4096)
+                if not data:
+                    print('Socket closed', file=sys.stderr)
+                    sockets.remove(sock)
+                    del buffers[sock.fileno()]
+                    sock.close()
+                    if not sockets:
+                        return 0
+                    continue
+                buffers[sock.fileno()] += data
+                while b'\n' in buffers[sock.fileno()]:
+                    line, buffers[sock.fileno()] = buffers[sock.fileno()].split(b'\n', 1)
+                    print(line.decode('utf-8'), flush=True)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for sock in sockets:
+            sock.close()
+    return 0
+
+
 def install_mediator(args):
     brotab_logger.info('Installing mediators')
     bt_mediator_path = which('bt_mediator')
@@ -762,6 +815,13 @@ def parse_args(args):
         address (host:port), native app PIDs, and browser names
         ''')
     parser_show_clients.set_defaults(func=show_clients)
+
+    parser_events = subparsers.add_parser(
+        'events',
+        help='''
+        stream real-time tab events (create, close, update) from browser
+        ''')
+    parser_events.set_defaults(func=stream_events)
 
     parser_install_mediator = subparsers.add_parser(
         'install',

@@ -1,6 +1,8 @@
 import json
+import queue
 import struct
 import sys
+import threading
 from abc import ABC
 from abc import abstractmethod
 from typing import BinaryIO
@@ -72,3 +74,54 @@ class StdTransport(Transport):
     def close(self):
         self._in.close()
         self._out.close()
+
+
+class DemuxTransport:
+    """Wraps a Transport, running a reader thread that separates
+    event messages (have 'event' key) from command responses."""
+
+    def __init__(self, transport: Transport):
+        self._transport = transport
+        self._response_queue: queue.Queue = queue.Queue()
+        self._event_queue: queue.Queue = queue.Queue(maxsize=1000)
+        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self._reader_thread.start()
+
+    def _reader_loop(self):
+        while True:
+            try:
+                message = self._transport.recv()
+                if isinstance(message, dict) and "event" in message:
+                    mediator_logger.info('DemuxTransport EVENT: %s', message)
+                    try:
+                        self._event_queue.put_nowait(message)
+                    except queue.Full:
+                        try:
+                            self._event_queue.get_nowait()
+                        except queue.Empty:
+                            pass
+                        self._event_queue.put_nowait(message)
+                else:
+                    self._response_queue.put(message)
+            except TransportError:
+                mediator_logger.info('DemuxTransport: transport closed')
+                break
+            except Exception:
+                mediator_logger.exception('DemuxTransport: unexpected error in reader loop')
+                break
+
+    def send(self, command: dict) -> None:
+        self._transport.send(command)
+
+    def recv(self, timeout: float = 60.0):
+        try:
+            return self._response_queue.get(timeout=timeout)
+        except queue.Empty:
+            raise TransportError('DemuxTransport: no response within timeout')
+
+    @property
+    def event_queue(self) -> queue.Queue:
+        return self._event_queue
+
+    def close(self):
+        self._transport.close()

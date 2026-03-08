@@ -15,8 +15,10 @@ from brotab.mediator.const import DEFAULT_SHUTDOWN_POLL_INTERVAL
 from brotab.mediator.http_server import MediatorHttpServer
 from brotab.mediator.log import disable_click_echo
 from brotab.mediator.log import mediator_logger
+from brotab.mediator.event_server import EventServer
 from brotab.mediator.remote_api import default_remote_api
 from brotab.mediator.transport import default_transport
+from brotab.mediator.transport import DemuxTransport
 
 
 # TODO:
@@ -72,29 +74,44 @@ def mediator_main():
     transport = default_transport()
     # transport = transport_with_timeout(sys.stdin.buffer, sys.stdout.buffer, DEFAULT_TRANSPORT_TIMEOUT)
     # transport = transport_with_timeout(sys.stdin.buffer, sys.stdout.buffer, 1.0)
-    remote_api = default_remote_api(transport)
+    demux = DemuxTransport(transport)
+    remote_api = default_remote_api(demux)
     host = http_iface()
     poll_interval = DEFAULT_SHUTDOWN_POLL_INTERVAL
+
+    event_server = None
 
     for port in port_range:
         mediator_logger.info('Starting mediator on %s:%s...', host, port)
         if is_port_accepting_connections(port):
             continue
         try:
+            socket_path = f'/tmp/brotab-events-{port}.sock'
+            event_server = EventServer(socket_path, demux.event_queue)
+            event_server.start()
+
             server = MediatorHttpServer(host, port, remote_api, poll_interval)
             thread = server.run.in_thread()
-            sig.setup(lambda: server.run.shutdown(join=False))
-            # server.run.parent_watcher(thread.is_alive, interval=1.0)
+
+            def shutdown_all():
+                server.run.shutdown(join=False)
+                if event_server:
+                    event_server.shutdown()
+
+            sig.setup(shutdown_all)
             thread.join()
             mediator_logger.info('Exiting mediator pid=%s on %s:%s...', os.getpid(), host, port)
             break
         except OSError as e:
-            # TODO: fixme: we won't get this if we run in a process
             mediator_logger.info('Cannot bind on port %s: %s', port, e)
+            if event_server:
+                event_server.shutdown()
+                event_server = None
         except BrokenPipeError as e:
-            # TODO: probably also won't work with processes, also a race
             mediator_logger.exception('Pipe has been closed (%s)', e)
             server.run.shutdown(join=True)
+            if event_server:
+                event_server.shutdown()
             break
 
     else:

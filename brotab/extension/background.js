@@ -630,6 +630,41 @@ port.onMessage.addListener((command) => {
   }
 });
 
+/*
+Tab event listeners — push unsolicited events to mediator.
+These allow external consumers to react to tab changes in real time.
+*/
+function setupTabEventListeners() {
+  const tabsApi = browserTabs._browser.tabs;
+
+  tabsApi.onCreated.addListener((tab) => {
+    port.postMessage({
+      event: "tab_created",
+      tab: {id: tab.id, windowId: tab.windowId, url: tab.url || "", title: tab.title || ""}
+    });
+  });
+
+  tabsApi.onRemoved.addListener((tabId, removeInfo) => {
+    port.postMessage({
+      event: "tab_removed",
+      tabId: tabId,
+      windowId: removeInfo.windowId
+    });
+  });
+
+  tabsApi.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.url || changeInfo.title) {
+      port.postMessage({
+        event: "tab_updated",
+        tab: {id: tab.id, windowId: tab.windowId, url: tab.url, title: tab.title},
+        changeInfo: changeInfo
+      });
+    }
+  });
+}
+
+setupTabEventListeners();
+
 port.onDisconnect.addListener(function() {
   console.log("Disconnected");
   if(chrome.runtime.lastError) {
