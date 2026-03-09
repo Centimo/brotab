@@ -218,7 +218,11 @@ function reconnect() {
 
   } else {
     console.log("Unknown browser detected");
+    return;
   }
+
+  setupCommandListener(port);
+  setupDisconnectListener(port);
 }
 
 
@@ -560,8 +564,10 @@ function getBrowserName() {
 
 /*
 Listen for messages from the app.
+Re-registered on each reconnect so the listener is bound to the current port.
 */
-port.onMessage.addListener((command) => {
+function setupCommandListener(currentPort) {
+currentPort.onMessage.addListener((command) => {
   console.log("Received: " + JSON.stringify(command, null, 4));
 
   if (command['name'] == 'list_tabs') {
@@ -629,10 +635,25 @@ port.onMessage.addListener((command) => {
     getBrowserName();
   }
 });
+}
+
+function setupDisconnectListener(currentPort) {
+  currentPort.onDisconnect.addListener(function() {
+    console.log("Disconnected");
+    if(chrome.runtime.lastError) {
+      console.warn("Reason: " + chrome.runtime.lastError.message);
+    } else {
+      console.warn("lastError is undefined");
+    }
+    console.log("Trying to reconnect");
+    reconnect();
+  });
+}
 
 /*
 Tab event listeners — push unsolicited events to mediator.
-These allow external consumers to react to tab changes in real time.
+Registered once (on browser.tabs, not on port), so they survive reconnects.
+They read the global `port` variable at call time, so they always use the current port.
 */
 function setupTabEventListeners() {
   const tabsApi = browserTabs._browser.tabs;
@@ -664,18 +685,6 @@ function setupTabEventListeners() {
 }
 
 setupTabEventListeners();
-
-port.onDisconnect.addListener(function() {
-  console.log("Disconnected");
-  if(chrome.runtime.lastError) {
-    console.warn("Reason: " + chrome.runtime.lastError.message);
-  } else {
-    console.warn("lastError is undefined");
-  }
-  //sleep(5000);
-  console.log("Trying to reconnect");
-  reconnect();
-});
 
 console.log("Connected to native app " + NATIVE_APP_NAME);
 
